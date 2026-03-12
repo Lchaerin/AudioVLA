@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:zenodo.org)"
+      "WebFetch(domain:zenodo.org)",
+      "Bash(python -c \"\nimport sys\nsys.path.insert\\(0, 'C:/Users/kivod02/Desktop/AudioVLA'\\)\nfrom data.sim_generator.scene_builder import SELD_CLASSES\nprint\\(f'클래스 수: {len\\(SELD_CLASSES\\)}'\\)\n\")"
     ]
   }
 }

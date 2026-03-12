@@ -3,7 +3,7 @@
 FSD50K (Freesound Dataset 50K) 다운로드 및 SELD 클래스별 정리 스크립트.
 
 Zenodo record 4060432에서 FSD50K dev 세트를 다운로드하고,
-13개 SELD 클래스에 해당하는 오디오 파일을
+200개 SELD 클래스에 해당하는 오디오 파일을
 data/sound_effects/{class_name}/ 형식으로 정리합니다.
 
 【파일 구조】
@@ -57,89 +57,15 @@ DEV_AUDIO_KEYS   = [
     "FSD50K.dev_audio.zip",   # 분할 zip에서 마지막(헤더) 파트
 ]
 
-# AudioSet 레이블 → SELD 클래스 매핑 (레이블 문자열 대소문자 무시 포함 검색)
-AUDIOSET_LABEL_TO_SELD: dict[str, str] = {
-    "Female speech, woman speaking": "Female speech",
-    "Male speech, man speaking":     "Male speech",
-    "Clapping":                      "Clapping",
-    "Hand claps":                    "Clapping",
-    "Telephone":                     "Telephone",
-    "Telephone bell ringing":        "Telephone",
-    "Ringtone":                      "Telephone",
-    "Mobile phone":                  "Telephone",
-    "Laughter":                      "Laughter",
-    "Giggle":                        "Laughter",
-    "Chuckle, chortle":              "Laughter",
-    "Domestic sounds, home sounds":  "Domestic sounds",
-    "Vacuum cleaner":                "Domestic sounds",
-    "Microwave oven":                "Domestic sounds",
-    "Dishwasher":                    "Domestic sounds",
-    "Blender":                       "Domestic sounds",
-    "Walk, footsteps":               "Walk, footsteps",
-    "Footsteps":                     "Walk, footsteps",
-    "Run":                           "Walk, footsteps",
-    "Door":                          "Door, open or close",
-    "Door, open or close":           "Door, open or close",
-    "Doorbell":                      "Door, open or close",
-    "Squeak":                        "Door, open or close",
-    "Creak":                         "Door, open or close",
-    "Music":                         "Music",
-    "Song":                          "Music",
-    "Pop music":                     "Music",
-    "Rock music":                    "Music",
-    "Electronic music":              "Music",
-    "Jazz":                          "Music",
-    "Classical music":               "Music",
-    "Musical instrument":            "Musical instrument",
-    "Guitar":                        "Musical instrument",
-    "Piano":                         "Musical instrument",
-    "Violin, fiddle":                "Musical instrument",
-    "Drum":                          "Musical instrument",
-    "Trumpet":                       "Musical instrument",
-    "Saxophone":                     "Musical instrument",
-    "Flute":                         "Musical instrument",
-    "Synthesizer":                   "Musical instrument",
-    "Water tap, faucet":             "Water tap, faucet",
-    "Sink (filling or washing)":     "Water tap, faucet",
-    "Running water":                 "Water tap, faucet",
-    "Bell":                          "Bell",
-    "Church bell":                   "Bell",
-    "Bicycle bell":                  "Bell",
-    "Cowbell":                       "Bell",
-    "Jingle bell":                   "Bell",
-    "Wind chime":                    "Bell",
-    "Knock":                         "Knock",
-    "Knocking on door":              "Knock",
-    "Tap":                           "Knock",
-    "Thump, thud":                   "Knock",
-}
+# SELD_CLASSES를 scene_builder에서 가져옴 (200개 FSD50K AudioSet 클래스)
+# FSD50K 레이블명 = SELD 클래스명 → identity 매핑
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).parent.parent))
+from data.sim_generator.scene_builder import SELD_CLASSES
 
-# MID → SELD 클래스 (CSV 파싱 fallback)
-MID_TO_SELD: dict[str, str] = {
-    "/m/02zsn":   "Female speech",
-    "/m/05zppz":  "Male speech",
-    "/m/0l15bq":  "Clapping",
-    "/m/07cx4":   "Telephone",
-    "/m/07pp_mv": "Telephone",
-    "/m/01j3sz":  "Laughter",
-    "/m/07r4gkf": "Laughter",
-    "/m/0dv3j":   "Domestic sounds",
-    "/m/01d3sl":  "Domestic sounds",
-    "/m/07pbtc8": "Walk, footsteps",
-    "/m/0l7xg":   "Walk, footsteps",
-    "/m/02y_763": "Door, open or close",
-    "/m/07r4wb8": "Door, open or close",
-    "/m/04rlf":   "Music",
-    "/m/04szw":   "Musical instrument",
-    "/m/085jw":   "Musical instrument",
-    "/m/0dxrf":   "Water tap, faucet",
-    "/m/07n_g":   "Bell",
-    "/m/07rv9rh": "Bell",
-    "/m/0642b4":  "Knock",
-    "/m/07q6cd_": "Knock",
-}
-
-SELD_CLASSES = list(dict.fromkeys(AUDIOSET_LABEL_TO_SELD.values()))
+# 빠른 매핑용: 소문자 클래스명 → 원본 클래스명
+_SELD_LOWER: dict[str, str] = {c.lower(): c for c in SELD_CLASSES}
 
 
 # ── 유틸리티 ──────────────────────────────────────────────────────────────────
@@ -149,17 +75,17 @@ def _class_dir_name(cls: str) -> str:
 
 
 def _labels_to_seld(labels_str: str, mids_str: str) -> Optional[str]:
-    """AudioSet 레이블 문자열 또는 MID에서 SELD 클래스 결정."""
-    # MID 기반 (더 신뢰성 높음)
-    for mid in mids_str.split(","):
-        mid = mid.strip()
-        if mid in MID_TO_SELD:
-            return MID_TO_SELD[mid]
-    # 레이블 문자열 기반 (대소문자 무시 부분 일치)
+    """
+    FSD50K 레이블 문자열에서 SELD 클래스 결정.
+
+    FSD50K 레이블 = AudioSet 클래스명 = SELD 클래스명이므로 identity 매핑.
+    labels_str은 쉼표 구분이지만 "Walk, footsteps" 같이 쉼표를 포함한 클래스명도 있으므로
+    분할하지 않고 각 SELD 클래스명이 전체 문자열에 포함되는지 substring 검사.
+    """
     labels_lower = labels_str.lower()
-    for audioset_label, seld_cls in AUDIOSET_LABEL_TO_SELD.items():
-        if audioset_label.lower() in labels_lower:
-            return seld_cls
+    for cls_lower, cls_orig in _SELD_LOWER.items():
+        if cls_lower in labels_lower:
+            return cls_orig
     return None
 
 

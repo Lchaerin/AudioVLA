@@ -21,7 +21,7 @@ model:
   num_heads: 4
   N_max: 8
   sigma_init: 20.0
-  num_seld_classes: 13
+  num_seld_classes: 200
   clap_dim: 512
 
 data:
