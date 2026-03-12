@@ -18,14 +18,14 @@ import logging
 import random
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
-import torchaudio
 
 try:
     from .scene_builder import SceneBuilder, SELD_CLASSES
     from .binaural_renderer import MultisourceBinauralMixer, SOFAPool
 except ImportError:
-    # python data/sim_generator/episode_collector.py 직접 실행 시
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from data.sim_generator.scene_builder import SceneBuilder, SELD_CLASSES
@@ -34,29 +34,22 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
-# 기본 경로 (프로젝트 루트 기준)
-_PROJECT_ROOT       = Path(__file__).parent.parent.parent
-DEFAULT_SOUND_DIR   = _PROJECT_ROOT / "data" / "sound_effects"
-DEFAULT_HRIR_DIR    = _PROJECT_ROOT / "data" / "hrir"
+_PROJECT_ROOT     = Path(__file__).parent.parent.parent
+DEFAULT_SOUND_DIR = _PROJECT_ROOT / "data" / "sound_effects"
+DEFAULT_HRIR_DIR  = _PROJECT_ROOT / "data" / "hrir"
 
 
 def find_audio_clips(sound_dir: Path, num_classes: int) -> dict[int, list[Path]]:
     """
     sound_dir 하위 클래스 디렉터리에서 오디오 파일을 인덱싱합니다.
-
-    디렉터리명은 SELD_CLASSES[i].replace(" ", "_") 규칙을 따릅니다.
-    예) data/sound_effects/Telephone/, data/sound_effects/Walk,_footsteps/
-
-    클래스 디렉터리가 없으면 해당 클래스는 화이트 노이즈 fallback을 사용합니다.
+    파일이 없는 클래스는 빈 리스트로 유지 (씬 생성 시 해당 클래스 제외).
     """
     clips: dict[int, list[Path]] = {i: [] for i in range(num_classes)}
     if not sound_dir.exists():
-        log.warning(
-            f"sound_effects 디렉터리가 없습니다: {sound_dir}\n"
-            f"  python scripts/download_sound_effects.py 를 먼저 실행하세요."
-        )
+        log.warning(f"sound_effects 디렉터리가 없습니다: {sound_dir}")
         return clips
 
+    missing = []
     for cls_idx, cls_name in enumerate(SELD_CLASSES[:num_classes]):
         cls_dir = sound_dir / cls_name.replace(" ", "_")
         if cls_dir.exists():
@@ -66,13 +59,37 @@ def find_audio_clips(sound_dir: Path, num_classes: int) -> dict[int, list[Path]]
                 + list(cls_dir.glob("*.mp3"))
             )
             clips[cls_idx] = found
-            log.debug(f"  {cls_name}: {len(found)}개 파일")
         else:
-            log.warning(f"  클래스 디렉터리 없음: {cls_dir} (화이트 노이즈 사용)")
+            missing.append(cls_name)
 
-    total = sum(len(v) for v in clips.values())
-    log.info(f"오디오 클립 인덱싱 완료: 총 {total}개 ({sound_dir})")
+    available = sum(1 for v in clips.values() if len(v) > 0)
+    total     = sum(len(v) for v in clips.values())
+    log.info(f"오디오 클립 인덱싱 완료: {available}/{num_classes}개 클래스, 총 {total}개 파일")
+    if missing:
+        log.info(f"  오디오 없는 클래스 {len(missing)}개는 씬 생성에서 제외됩니다.")
     return clips
+
+
+def load_audio_soundfile(path: Path, target_samples: int, sample_rate: int) -> torch.Tensor:
+    """
+    soundfile로 오디오 로드 (torchaudio/torchcodec 의존성 없음).
+    Returns: (target_samples,) 모노 float32 텐서
+    """
+    data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    wav = torch.from_numpy(data.mean(axis=1))  # → 모노 (T,)
+
+    if sr != sample_rate:
+        # torchaudio.functional.resample은 torchcodec 없이도 동작
+        import torchaudio
+        wav = torchaudio.functional.resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
+
+    if wav.shape[0] < target_samples:
+        repeats = (target_samples // wav.shape[0]) + 2
+        wav = wav.repeat(repeats)
+
+    max_start = max(0, wav.shape[0] - target_samples)
+    start = random.randint(0, max_start)
+    return wav[start: start + target_samples]
 
 
 def load_or_generate_audio(
@@ -81,43 +98,23 @@ def load_or_generate_audio(
     target_samples: int,
     sample_rate: int,
 ) -> torch.Tensor:
-    """
-    해당 클래스의 오디오 클립을 랜덤 선택하여 로드합니다.
-    클립이 없으면 화이트 노이즈를 반환합니다.
-
-    target_samples보다 짧으면 랜덤 offset으로 반복 타일링합니다.
-    """
     paths = clips.get(cls_idx, [])
-    if paths:
-        path = random.choice(paths)
-        try:
-            wav, sr = torchaudio.load(str(path))
-        except Exception as e:
-            log.warning(f"오디오 로드 실패 ({path}): {e}. 화이트 노이즈 사용.")
-            return torch.randn(target_samples) * 0.05
+    if not paths:
+        return torch.randn(target_samples) * 0.05
 
-        if sr != sample_rate:
-            wav = torchaudio.functional.resample(wav, sr, sample_rate)
-        wav = wav.mean(0)  # → 모노
-
-        # target_samples보다 짧으면 타일링
-        if wav.shape[0] < target_samples:
-            repeats = (target_samples // wav.shape[0]) + 2
-            wav = wav.repeat(repeats)
-        # 랜덤 offset으로 크롭
-        max_start = max(0, wav.shape[0] - target_samples)
-        start = random.randint(0, max_start)
-        wav = wav[start : start + target_samples]
-    else:
-        wav = torch.randn(target_samples) * 0.05  # fallback
-
-    return wav
+    path = random.choice(paths)
+    try:
+        return load_audio_soundfile(path, target_samples, sample_rate)
+    except Exception as e:
+        log.debug(f"오디오 로드 실패 ({path.name}): {e}")
+        return torch.randn(target_samples) * 0.05
 
 
 def generate_episode(
     scene_builder: SceneBuilder,
     mixer: MultisourceBinauralMixer,
     clips: dict[int, list[Path]],
+    available_class_indices: list[int],
     audio_sr: int,
     audio_duration: float,
     action_dim: int = 7,
@@ -125,9 +122,8 @@ def generate_episode(
 ) -> dict:
     """단일 학습 에피소드 생성."""
     target_samples = int(audio_sr * audio_duration)
-    scene = scene_builder.build()
+    scene = scene_builder.build(available_class_indices=available_class_indices)
 
-    # 멀티소스 바이노럴 오디오 생성 (SOFA HRTF 컨볼루션)
     sources = []
     for obj in scene.objects:
         mono = load_or_generate_audio(clips, obj.class_idx, target_samples, audio_sr)
@@ -140,13 +136,10 @@ def generate_episode(
 
     binaural = mixer.mix(sources, target_samples)  # (2, T)
 
-    # target 인덱스 (scene.objects 리스트 내 위치)
     target_idx = next(
         i for i, o in enumerate(scene.objects)
         if o.object_id == scene.target_object_id
     )
-
-    # Dummy action (실제 환경에서는 scripted policy 또는 teleoperation 데이터로 교체)
     target_action = torch.zeros(action_chunk, action_dim)
 
     meta = {
@@ -169,30 +162,33 @@ def generate_episode(
     return {"binaural": binaural, "meta": meta}
 
 
+def save_audio_soundfile(path: Path, tensor: torch.Tensor, sample_rate: int) -> None:
+    """soundfile로 wav 저장 (torchaudio/torchcodec 의존성 없음)."""
+    data = tensor.numpy().T  # (2, T) → (T, 2)
+    sf.write(str(path), data, sample_rate, subtype="PCM_16")
+
+
 def collect_episodes(args):
-    out_dir    = Path(args.output_dir)
-    sound_dir  = Path(args.sound_effects_dir)
-    hrir_dir   = Path(args.hrir_dir)
+    out_dir   = Path(args.output_dir)
+    sound_dir = Path(args.sound_effects_dir)
+    hrir_dir  = Path(args.hrir_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── 오디오 클립 인덱싱 ──────────────────────────────────────────────────────
     clips = find_audio_clips(sound_dir, num_classes=len(SELD_CLASSES))
-    n_available = sum(len(v) for v in clips.values())
-    if n_available == 0:
-        log.warning(
-            "사용 가능한 오디오 클립이 없습니다. "
-            "python scripts/download_sound_effects.py 를 먼저 실행하세요. "
-            "화이트 노이즈로 계속 진행합니다."
-        )
 
-    # ── SOFAPool 초기화 ────────────────────────────────────────────────────────
+    # 실제 오디오가 있는 클래스 인덱스만 추출
+    available_class_indices = [i for i, v in clips.items() if len(v) > 0]
+    if not available_class_indices:
+        log.warning("오디오 파일이 없어 모든 클래스를 허용합니다 (화이트 노이즈 사용).")
+        available_class_indices = list(range(len(SELD_CLASSES)))
+
     try:
         sofa_pool = SOFAPool(str(hrir_dir), target_sr=args.audio_sr)
         log.info(f"SOFAPool 초기화: {sofa_pool.n_subjects}개 SOFA 파일")
         renderer = sofa_pool
     except FileNotFoundError as e:
         log.warning(f"SOFA 초기화 실패: {e}\nITD/ILD 근사 렌더러를 사용합니다.")
-        renderer = None  # MultisourceBinauralMixer에서 SimpleBinauralRenderer로 fallback
+        renderer = None
 
     builder = SceneBuilder(img_size=args.img_size)
     mixer   = MultisourceBinauralMixer(sample_rate=args.audio_sr, renderer=renderer)
@@ -205,7 +201,7 @@ def collect_episodes(args):
 
         try:
             episode = generate_episode(
-                builder, mixer, clips,
+                builder, mixer, clips, available_class_indices,
                 audio_sr=args.audio_sr,
                 audio_duration=args.audio_duration,
             )
@@ -213,22 +209,14 @@ def collect_episodes(args):
             log.error(f"에피소드 {ep_idx} 생성 실패: {e}")
             continue
 
-        # 오디오 저장
-        torchaudio.save(
-            str(ep_dir / "audio.wav"),
-            episode["binaural"],
-            args.audio_sr,
-        )
+        save_audio_soundfile(ep_dir / "audio.wav", episode["binaural"], args.audio_sr)
 
-        # 메타데이터 저장
         with open(ep_dir / "meta.json", "w") as f:
             json.dump(episode["meta"], f, indent=2)
 
-        # placeholder 이미지 (SELD 학습에는 불필요 — --skip_image 로 생략 가능)
         if not args.skip_image:
             try:
                 from PIL import Image
-                import numpy as np
                 dummy_img = np.random.randint(0, 255, (args.img_size, args.img_size, 3), dtype=np.uint8)
                 Image.fromarray(dummy_img).save(ep_dir / "image.png")
             except ImportError:
@@ -242,21 +230,14 @@ def collect_episodes(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Audio-VLA 시뮬레이션 에피소드 생성")
-    parser.add_argument("--output_dir",         default="data/sim_episodes",
-                        help="에피소드 저장 디렉터리")
-    parser.add_argument("--num_episodes",        type=int, default=5000,
-                        help="생성할 에피소드 수")
-    parser.add_argument("--sound_effects_dir",   default=str(DEFAULT_SOUND_DIR),
-                        help="SELD 클래스별 오디오 파일 디렉터리 (FSD50K 정리된 위치)")
-    parser.add_argument("--hrir_dir",            default=str(DEFAULT_HRIR_DIR),
-                        help="SOFA HRTF 파일 디렉터리 (data/hrir/)")
-    parser.add_argument("--audio_sr",            type=int,   default=24000,
-                        help="출력 오디오 샘플레이트")
-    parser.add_argument("--audio_duration",      type=float, default=5.0,
-                        help="에피소드당 오디오 길이 (초)")
-    parser.add_argument("--img_size",            type=int,   default=512,
-                        help="이미지 해상도")
-    parser.add_argument("--skip_image",          action="store_true",
+    parser.add_argument("--output_dir",        default="data/sim_episodes")
+    parser.add_argument("--num_episodes",       type=int,   default=5000)
+    parser.add_argument("--sound_effects_dir",  default=str(DEFAULT_SOUND_DIR))
+    parser.add_argument("--hrir_dir",           default=str(DEFAULT_HRIR_DIR))
+    parser.add_argument("--audio_sr",           type=int,   default=24000)
+    parser.add_argument("--audio_duration",     type=float, default=5.0)
+    parser.add_argument("--img_size",           type=int,   default=512)
+    parser.add_argument("--skip_image",         action="store_true",
                         help="image.png 생성 생략 (SELD 전용 학습 시 사용)")
     args = parser.parse_args()
     collect_episodes(args)

@@ -290,7 +290,14 @@ class SceneBuilder:
             [        0.0,         0.0,  1.0],
         ], dtype=torch.float32)
 
-    def build(self) -> Scene:
+    def build(self, available_class_indices: list[int] | None = None) -> Scene:
+        """
+        Args:
+            available_class_indices: 씬에 등장할 수 있는 클래스 인덱스 목록.
+                None이면 전체 200개 클래스 중 랜덤 선택.
+                오디오 파일이 있는 클래스만 전달하면 화이트 노이즈 없이 실제 소리만 사용.
+        """
+        pool = available_class_indices if available_class_indices else list(range(len(SELD_CLASSES)))
         n = random.randint(*self.n_objects_range)
         azimuths = sorted(random.uniform(*self.az_range) for _ in range(n))
 
@@ -299,7 +306,7 @@ class SceneBuilder:
             el    = random.uniform(*self.el_range)
             depth = random.uniform(*self.depth_range)
 
-            cls_idx  = random.randint(0, len(SELD_CLASSES) - 1)
+            cls_idx  = random.choice(pool)
             cls_name = SELD_CLASSES[cls_idx]
 
             x = depth * math.sin(az) * math.cos(el)
