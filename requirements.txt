@@ -24,3 +24,7 @@ wandb
 matplotlib
 einops
 tqdm
+requests
+
+# SOFA / HRTF (binaural rendering)
+netCDF4

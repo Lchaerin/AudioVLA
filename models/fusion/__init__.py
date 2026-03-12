@@ -3,6 +3,7 @@ from .azel_to_pixel import AzElToPixel
 from .audio_attention_map import AudioAttentionMapGenerator
 from .audio_visual_fusion import AudioVisualFusion
 from .clap_projection import CLAPProjection
+from .audio_prefix_encoder import AudioPrefixEncoder
 
 __all__ = [
     "AudioLanguageCrossAttention",
@@ -10,4 +11,5 @@ __all__ = [
     "AudioAttentionMapGenerator",
     "AudioVisualFusion",
     "CLAPProjection",
+    "AudioPrefixEncoder",
 ]

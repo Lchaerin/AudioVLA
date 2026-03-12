@@ -101,14 +101,24 @@ class SmolVLAWrapper(nn.Module):
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def encode_language(self, text: str | list[str]) -> torch.Tensor:
+    def encode_language(
+        self,
+        text: str | list[str],
+        audio_prefix_tokens: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
-        Run the language encoder and return intermediate features.
+        Run the language encoder and return intermediate features,
+        optionally prepending audio spatial prefix tokens.
+
+        audio_prefix_tokens를 prepend하면 언어 디코더가 소리 위치 정보를
+        직접 참조하여 "두 소리 사이의 물체" 같은 공간 관계 추론이 가능해짐.
 
         Args:
-            text: str or list[str]
+            text:                str or list[str]
+            audio_prefix_tokens: (B, N, D_l) or None — AudioPrefixEncoder 출력.
+                                 None이면 기존 동작과 동일.
         Returns:
-            lang_tokens: (B, T, D_l)
+            lang_tokens: (B, N+T, D_l) if prefix provided, else (B, T, D_l)
         """
         self._load()
         if isinstance(text, str):
@@ -123,10 +133,17 @@ class SmolVLAWrapper(nn.Module):
         _ = self._policy.model.language_model(**inputs)
 
         if self._lang_tokens is not None:
-            return self._lang_tokens
-        # Fallback: return last hidden state
-        out = self._policy.model.language_model(**inputs, output_hidden_states=True)
-        return out.hidden_states[len(out.hidden_states) // 2]
+            lang_tokens = self._lang_tokens
+        else:
+            # Fallback: return last hidden state
+            out = self._policy.model.language_model(**inputs, output_hidden_states=True)
+            lang_tokens = out.hidden_states[len(out.hidden_states) // 2]
+
+        # Prepend audio spatial prefix tokens
+        if audio_prefix_tokens is not None:
+            lang_tokens = torch.cat([audio_prefix_tokens, lang_tokens], dim=1)
+
+        return lang_tokens
 
     @torch.no_grad()
     def encode_vision(self, image: torch.Tensor) -> torch.Tensor:

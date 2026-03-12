@@ -19,6 +19,7 @@ from .fusion import (
     AudioAttentionMapGenerator,
     AudioVisualFusion,
     CLAPProjection,
+    AudioPrefixEncoder,
 )
 from .vla import SmolVLAWrapper
 
@@ -65,6 +66,11 @@ class AudioVLAPipeline(nn.Module):
 
         # ── Trainable fusion modules (~5-10 M params) ─────────────────
         self.sound_token_enc = SoundTokenEncoder(D_s=D_s, num_classes=n_cls)
+        # AudioPrefixEncoder: SELD 위치 정보 → 언어 prefix 토큰 (B, N, D_l)
+        # LLM이 "두 소리 사이의 물체" 같은 공간 관계 추론을 직접 처리할 수 있게 함
+        self.audio_prefix_enc = AudioPrefixEncoder(
+            D_l=D_l, num_classes=n_cls, D_s=D_s
+        )
         self.audio_lang_cross_attn = AudioLanguageCrossAttention(
             D_s=D_s, D_l=D_l, D_hidden=D_h, num_heads=config.model.num_heads
         )
@@ -92,6 +98,7 @@ class AudioVLAPipeline(nn.Module):
         """Return parameters of fusion modules only."""
         modules = [
             self.sound_token_enc,
+            self.audio_prefix_enc,
             self.audio_lang_cross_attn,
             self.attn_map_gen,
             self.av_fusion,
@@ -105,6 +112,7 @@ class AudioVLAPipeline(nn.Module):
         path.parent.mkdir(parents=True, exist_ok=True)
         state = {
             "sound_token_enc":       self.sound_token_enc.state_dict(),
+            "audio_prefix_enc":      self.audio_prefix_enc.state_dict(),
             "audio_lang_cross_attn": self.audio_lang_cross_attn.state_dict(),
             "attn_map_gen":          self.attn_map_gen.state_dict(),
             "av_fusion":             self.av_fusion.state_dict(),
@@ -116,6 +124,7 @@ class AudioVLAPipeline(nn.Module):
         """Load fusion module weights."""
         state = torch.load(path, map_location=self._device)
         self.sound_token_enc.load_state_dict(state["sound_token_enc"])
+        self.audio_prefix_enc.load_state_dict(state["audio_prefix_enc"])
         self.audio_lang_cross_attn.load_state_dict(state["audio_lang_cross_attn"])
         self.attn_map_gen.load_state_dict(state["attn_map_gen"])
         self.av_fusion.load_state_dict(state["av_fusion"])
@@ -156,52 +165,74 @@ class AudioVLAPipeline(nn.Module):
         if camera_extrinsic is not None:
             camera_extrinsic = camera_extrinsic.to(self._device)
 
+        img_h, img_w = img.shape[-2], img.shape[-1]
+
         # Step 1: SELD
         seld_out = self.seld(audio)
 
-        # Step 2: Sound tokens
+        # Step 2: Sound tokens (for cross-attention)
         sound_tokens = self.sound_token_enc(
             seld_out.peak_coords, seld_out.class_logits, seld_out.energy
         )  # (1, N, D_s)
 
-        # Step 3: Language encoding (SmolVLA intermediate layer)
-        lang_tokens = self.smolvla.encode_language(language_command)  # (1, T, D_l)
+        # Step 3: az/el → pixel (언어 인코딩 전에 먼저 수행)
+        # prefix token 생성에 픽셀 좌표가 필요하므로 순서 변경
+        pixel_coords, in_frame = self.azel_to_pixel(
+            seld_out.peak_coords, K, camera_extrinsic,
+            img_h=img_h, img_w=img_w,
+        )  # (1, N, 2), (1, N)
 
-        # Step 4: Audio-Language Cross-Attention
+        # Step 4: Audio prefix tokens 생성
+        # 정규화 2D 좌표(in-frame) 또는 정규화 az/el(out-of-frame)을 D_l 토큰으로 인코딩
+        # 이 토큰들이 언어 시퀀스 앞에 prepend되어 LLM이 공간 관계를 직접 추론할 수 있음
+        audio_prefix_tokens = self.audio_prefix_enc(
+            pixel_coords=pixel_coords,
+            az_el_coords=seld_out.peak_coords,
+            class_logits=seld_out.class_logits,
+            energy=seld_out.energy,
+            in_frame=in_frame,
+            valid_mask=seld_out.valid_mask,
+            img_h=img_h,
+            img_w=img_w,
+        )  # (1, N, D_l)
+
+        # Step 5: Language encoding with audio prefix prepended
+        # lang_tokens shape: (1, N+T, D_l) — N개 audio prefix + T개 text tokens
+        lang_tokens = self.smolvla.encode_language(
+            language_command, audio_prefix_tokens=audio_prefix_tokens
+        )
+
+        # Step 6: Audio-Language Cross-Attention
+        # 확장된 lang_tokens(N+T)를 query로 사용 → 더 풍부한 문맥으로 소스 중요도 결정
         attn_weights, audio_context = self.audio_lang_cross_attn(
             sound_tokens, lang_tokens, seld_out.valid_mask
         )  # (1, N), (1, D_hidden)
 
-        # Step 5: az/el → pixel
-        pixel_coords, in_frame = self.azel_to_pixel(
-            seld_out.peak_coords, K, camera_extrinsic,
-            img_h=img.shape[-2], img_w=img.shape[-1]
-        )  # (1, N, 2), (1, N)
-
-        # Step 6: Audio attention map (on visual token grid)
+        # Step 7: Audio attention map (on visual token grid)
         H_feat = W_feat = 8  # SmolVLA has 64 = 8×8 visual tokens
         audio_attn_map = self.attn_map_gen(
             pixel_coords, attn_weights, in_frame, H_feat, W_feat
         )  # (1, 8, 8)
 
-        # Step 7: Visual encoding
+        # Step 8: Visual encoding
         visual_features = self.smolvla.encode_vision(img)  # (1, 64, D_v)
 
-        # Step 8: AudioVisual Fusion
+        # Step 9: AudioVisual Fusion
         fused_features = self.av_fusion(
             visual_features, audio_attn_map, audio_context
         )  # (1, 64, D_v)
 
-        # Step 9: Action prediction
+        # Step 10: Action prediction
         actions = self.smolvla.predict_action(fused_features, lang_tokens, robot_state)
 
         debug_info = {
-            "peak_coords":   seld_out.peak_coords[0].cpu(),
-            "class_logits":  seld_out.class_logits[0].cpu(),
-            "attn_weights":  attn_weights[0].cpu(),
-            "pixel_coords":  pixel_coords[0].cpu(),
-            "audio_attn_map": audio_attn_map[0].cpu(),
-            "in_frame_mask": in_frame[0].cpu(),
+            "peak_coords":        seld_out.peak_coords[0].cpu(),
+            "class_logits":       seld_out.class_logits[0].cpu(),
+            "attn_weights":       attn_weights[0].cpu(),
+            "pixel_coords":       pixel_coords[0].cpu(),
+            "audio_attn_map":     audio_attn_map[0].cpu(),
+            "in_frame_mask":      in_frame[0].cpu(),
+            "audio_prefix_tokens": audio_prefix_tokens[0].cpu(),
         }
 
         return actions[0], debug_info

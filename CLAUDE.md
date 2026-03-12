@@ -17,11 +17,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -r requirements.txt
 ```
 
+### Download sound effects dataset (FSD50K, ~19 GB download → ~3–5 GB after filtering)
+```bash
+python scripts/download_sound_effects.py
+# 클래스당 파일 수 조절 (기본 500):
+python scripts/download_sound_effects.py --max_per_class 300
+```
+
 ### Generate simulation training data
 ```bash
-bash scripts/generate_sim_data.sh data/sim_episodes 5000
-# With real AudioSet clips:
-bash scripts/generate_sim_data.sh data/sim_episodes 5000 /path/to/audioset
+# SOFA HRTF + FSD50K 사용 (권장):
+python data/sim_generator/episode_collector.py \
+    --output_dir data/sim_episodes \
+    --num_episodes 5000 \
+    --sound_effects_dir data/sound_effects \
+    --hrir_dir data/hrir
 ```
 
 ### Download pretrained checkpoints (CLAP + SmolVLA)
