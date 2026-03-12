@@ -21,8 +21,15 @@ from pathlib import Path
 import torch
 import torchaudio
 
-from .scene_builder import SceneBuilder, SELD_CLASSES
-from .binaural_renderer import MultisourceBinauralMixer, SOFAPool
+try:
+    from .scene_builder import SceneBuilder, SELD_CLASSES
+    from .binaural_renderer import MultisourceBinauralMixer, SOFAPool
+except ImportError:
+    # python data/sim_generator/episode_collector.py 직접 실행 시
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from data.sim_generator.scene_builder import SceneBuilder, SELD_CLASSES
+    from data.sim_generator.binaural_renderer import MultisourceBinauralMixer, SOFAPool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
