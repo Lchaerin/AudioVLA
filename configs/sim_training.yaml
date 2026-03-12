@@ -1,0 +1,19 @@
+defaults:
+  - default
+
+training:
+  batch_size: 32
+  total_steps: 50000
+  output_dir: outputs/sim_training
+
+data:
+  data_root: data/sim_episodes
+  sim_episodes: 10000
+  real_episodes: 0
+  audio_sr: 24000
+  audio_duration: 5.0
+  img_size: 512
+  use_augmentation: true
+
+model:
+  num_seld_classes: 13

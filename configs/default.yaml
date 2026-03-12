@@ -1,0 +1,44 @@
+training:
+  batch_size: 32
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  scheduler: cosine_annealing
+  warmup_steps: 500
+  total_steps: 50000
+  gradient_clip: 1.0
+  seed: 42
+  num_workers: 4
+  log_every: 50
+  eval_every: 500
+  save_every: 1000
+  output_dir: outputs/default
+
+model:
+  D_s: 256
+  D_l: 576
+  D_v: 576
+  D_hidden: 256
+  num_heads: 4
+  N_max: 8
+  sigma_init: 20.0
+  num_seld_classes: 13
+  clap_dim: 512
+
+data:
+  sim_episodes: 10000
+  real_episodes: 100
+  img_size: 512
+  audio_sr: 24000
+  audio_duration: 5.0
+  train_split: 0.9
+
+loss:
+  lambda_loc: 1.0
+  lambda_cls: 0.5
+  lambda_action: 1.0
+
+checkpoints:
+  seld_checkpoint: null
+  smolvla_checkpoint: lerobot/smolvla_base
+  clap_checkpoint: music_speech_audioset_epoch_15_esc_89.98.pt
+  fusion_checkpoint: null

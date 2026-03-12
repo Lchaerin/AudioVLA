@@ -1,0 +1,26 @@
+torch>=2.2.0
+torchaudio>=2.2.0
+torchvision>=0.17.0
+
+# VLA
+lerobot
+transformers>=4.40.0
+
+# SELD
+soundfile
+librosa>=0.10.0
+
+# CLAP
+laion-clap
+
+# Simulation (optional)
+# isaac-sim or habitat-sim
+
+# Utilities
+numpy
+scipy
+omegaconf
+wandb
+matplotlib
+einops
+tqdm
