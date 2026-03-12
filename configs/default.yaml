@@ -31,6 +31,7 @@ data:
   audio_sr: 24000
   audio_duration: 5.0
   train_split: 0.9
+  seld_data_root: data/sim_episodes   # SELDDataset이 읽을 에피소드 루트
 
 loss:
   lambda_loc: 1.0

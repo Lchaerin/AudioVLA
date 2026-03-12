@@ -217,14 +217,15 @@ def collect_episodes(args):
         with open(ep_dir / "meta.json", "w") as f:
             json.dump(episode["meta"], f, indent=2)
 
-        # placeholder 이미지 (실제 환경 렌더러로 교체)
-        try:
-            from PIL import Image
-            import numpy as np
-            dummy_img = np.random.randint(0, 255, (args.img_size, args.img_size, 3), dtype=np.uint8)
-            Image.fromarray(dummy_img).save(ep_dir / "image.png")
-        except ImportError:
-            pass
+        # placeholder 이미지 (SELD 학습에는 불필요 — --skip_image 로 생략 가능)
+        if not args.skip_image:
+            try:
+                from PIL import Image
+                import numpy as np
+                dummy_img = np.random.randint(0, 255, (args.img_size, args.img_size, 3), dtype=np.uint8)
+                Image.fromarray(dummy_img).save(ep_dir / "image.png")
+            except ImportError:
+                pass
 
         if (ep_idx + 1) % 500 == 0 or (ep_idx + 1) == args.num_episodes:
             log.info(f"  {ep_idx + 1} / {args.num_episodes} 에피소드 완료")
@@ -248,6 +249,8 @@ def main():
                         help="에피소드당 오디오 길이 (초)")
     parser.add_argument("--img_size",            type=int,   default=512,
                         help="이미지 해상도")
+    parser.add_argument("--skip_image",          action="store_true",
+                        help="image.png 생성 생략 (SELD 전용 학습 시 사용)")
     args = parser.parse_args()
     collect_episodes(args)
 
