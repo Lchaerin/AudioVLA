@@ -3,6 +3,7 @@ PyTorch Dataset classes for Audio-VLA training.
 
 DummyAudioVLADataset  — synthetic random tensors for pipeline testing
 AudioVLADataset       — loads real/simulated episodes from disk
+SELDDataset           — audio-only dataset for SELD model training (이미지 불필요)
 """
 
 from __future__ import annotations
@@ -193,3 +194,74 @@ class AudioVLADataset(Dataset):
             item["camera_extrinsic"] = extr
 
         return item
+
+
+# ---------------------------------------------------------------------------
+# SELD-only dataset (이미지 불필요 — audio + spatial labels만 사용)
+# ---------------------------------------------------------------------------
+
+class SELDDataset(Dataset):
+    """
+    SELD 모델 학습용 오디오 전용 데이터셋.
+
+    episode_collector가 생성한 에피소드에서 audio.wav와 meta.json만 읽습니다.
+    이미지는 로드하지 않아 SELD 학습 시 불필요한 I/O를 제거합니다.
+
+    타겟 포맷: EINv2 / ACCDOA
+      shape: (N_max, num_classes, 3)
+      각 track i, class c에 대해:
+        - source i의 클래스가 c이면: target[i, c] = [cos(el)*sin(az), -sin(el), cos(el)*cos(az)]
+        - 그 외: [0, 0, 0]
+    """
+
+    def __init__(
+        self,
+        data_root: str,
+        audio_sr: int = 24000,
+        num_classes: int = 200,
+        N_max: int = 8,
+        split: str = "train",
+        train_fraction: float = 0.9,
+    ):
+        self.data_root   = Path(data_root)
+        self.audio_sr    = audio_sr
+        self.num_classes = num_classes
+        self.N_max       = N_max
+
+        all_eps = sorted(self.data_root.glob("*/meta.json"))
+        n_train = int(len(all_eps) * train_fraction)
+        self.episodes = all_eps[:n_train] if split == "train" else all_eps[n_train:]
+
+    def __len__(self):
+        return len(self.episodes)
+
+    def __getitem__(self, idx: int) -> dict:
+        meta_path = self.episodes[idx]
+        ep_dir    = meta_path.parent
+
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        # ── 오디오 로드 ────────────────────────────────────────────────────────
+        waveform, sr = torchaudio.load(str(ep_dir / "audio.wav"))  # (2, T)
+        if sr != self.audio_sr:
+            waveform = torchaudio.functional.resample(waveform, sr, self.audio_sr)
+
+        # ── ACCDOA 타겟 생성 ───────────────────────────────────────────────────
+        # objects: [{class_idx, az_rad, el_rad}, ...]
+        objects = meta.get("objects", [])
+        target  = torch.zeros(self.N_max, self.num_classes, 3)
+
+        for track_i, obj in enumerate(objects[:self.N_max]):
+            cls = int(obj["class_idx"])
+            az  = float(obj["az_rad"])
+            el  = float(obj["el_rad"])
+            cos_el = math.cos(el)
+            xyz = torch.tensor([
+                cos_el * math.sin(az),
+                -math.sin(el),
+                cos_el * math.cos(az),
+            ])
+            target[track_i, cls] = xyz  # activity-coupled direction
+
+        return {"audio": waveform, "target_accdoa": target}
